@@ -5,9 +5,10 @@
 from typing import List, Dict
 from ooodev.loader import Lo
 from ooodev.loader.inst.options import Options
-from ooodev.office.calc import Calc, CalcDoc
-from ooodev.office.write import Write, WriteDoc
-from ooodev.office.draw import Draw, DrawDoc
+from ooodev.calc import CalcDoc
+from ooodev.office.write import Write
+from ooodev.write import WriteDoc
+from ooodev.draw import DrawDoc
 from ooodev.office.chart2 import Chart2
 from ooodev.utils.kind.chart2_types import ChartTypes
 from ooodev.utils.kind.zoom_kind import ZoomKind
