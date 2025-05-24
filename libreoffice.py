@@ -1,5 +1,7 @@
-import os
-import uno
+# mcp_libreoffice_ooodev_python3_uno.py
+# Requires python3-uno installed: sudo apt install python3-uno
+# Also requires ooo-dev-tools: pip install ooo-dev-tools
+
 from typing import List, Dict
 from ooodev.loader import Lo
 from ooodev.loader.inst.options import Options
@@ -11,8 +13,6 @@ from ooodev.utils.kind.chart2_types import ChartTypes
 from ooodev.utils.kind.zoom_kind import ZoomKind
 from ooodev.units import UnitMM
 from ooodev.form.forms import Forms
-from ooodev.macro.macro_loader import MacroLoader
-from ooodev.utils.info import Info
 from mcp.server.fastmcp import FastMCP, Context
 from contextlib import asynccontextmanager
 
@@ -24,14 +24,12 @@ class AppContext:
         self.next_id = 0
 
     def start_office(self):
-        """Initialize LibreOffice connection via OooDev in macro mode."""
+        """Initialize LibreOffice connection via OooDev."""
         if self.loader is None:
-            # Use OooDev.oxt extension context to avoid direct UNO imports
-            with MacroLoader():
-                self.loader = Lo.load_office(
-                    connector=Lo.ConnectSocket(),
-                    opt=Options(log_level="INFO")
-                )
+            self.loader = Lo.load_office(
+                connector=Lo.ConnectSocket(),
+                opt=Options(log_level="INFO")
+            )
         return self.loader
 
     def get_document(self, doc_id: str):
@@ -49,8 +47,7 @@ class AppContext:
     def close_office(self):
         """Close the LibreOffice instance."""
         if self.loader is not None:
-            with MacroLoader():
-                Lo.close_office()
+            Lo.close_office()
             self.loader = None
 
 @asynccontextmanager
@@ -63,8 +60,7 @@ async def app_lifespan(server: FastMCP):
         for doc_id in list(app_ctx.documents.keys()):
             doc = app_ctx.get_document(doc_id)
             if doc:
-                with MacroLoader():
-                    doc.close_doc()
+                doc.close_doc()
             app_ctx.remove_document(doc_id)
         app_ctx.close_office()
 
@@ -94,12 +90,11 @@ def open_document(ctx: Context, url: str, doc_type: str) -> str:
     if doc_type not in doc_types:
         raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
     try:
-        with MacroLoader():
-            if doc_type == "base":
-                doc = Lo.open_doc(fnm=url, loader=app_ctx.loader)
-            else:
-                doc_class = doc_types[doc_type]
-                doc = doc_class.from_path(fnm=url, lo_inst=app_ctx.loader)
+        if doc_type == "base":
+            doc = Lo.open_doc(fnm=url, loader=app_ctx.loader)
+        else:
+            doc_class = doc_types[doc_type]
+            doc = doc_class.from_path(fnm=url, lo_inst=app_ctx.loader)
         doc_id = f"doc_{app_ctx.next_id}"
         app_ctx.next_id += 1
         app_ctx.add_document(doc_id, doc)
@@ -123,17 +118,16 @@ def new_document(ctx: Context, doc_type: str) -> str:
         "calc": CalcDoc,
         "draw": DrawDoc,
         "impress": DrawDoc,  # Impress uses DrawDoc
-        "base": None  # Handled separately
+        "base": None
     }
     if doc_type not in doc_types:
         raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
     try:
-        with MacroLoader():
-            if doc_type == "base":
-                doc = Lo.create_doc(doc_type="sbase", loader=app_ctx.loader)
-            else:
-                doc_class = doc_types[doc_type]
-                doc = doc_class.create_doc(lo_inst=app_ctx.loader)
+        if doc_type == "base":
+            doc = Lo.create_doc(doc_type="sbase", loader=app_ctx.loader)
+        else:
+            doc_class = doc_types[doc_type]
+            doc = doc_class.create_doc(lo_inst=app_ctx.loader)
         doc_id = f"doc_{app_ctx.next_id}"
         app_ctx.next_id += 1
         app_ctx.add_document(doc_id, doc)
@@ -157,8 +151,7 @@ def save_document(ctx: Context, doc_id: str, url: str) -> str:
     if not doc:
         raise RuntimeException("Document not found")
     try:
-        with MacroLoader():
-            doc.save_doc(fnm=url)
+        doc.save_doc(fnm=url)
         return f"Document saved to {url}"
     except Exception as e:
         raise RuntimeException(f"Failed to save document: {str(e)}")
@@ -178,8 +171,7 @@ def close_document(ctx: Context, doc_id: str) -> str:
     if not doc:
         raise RuntimeException("Document not found")
     try:
-        with MacroLoader():
-            doc.close_doc()
+        doc.close_doc()
         app_ctx.remove_document(doc_id)
         return f"Document {doc_id} closed"
     except Exception as e:
@@ -290,24 +282,23 @@ def run_query(ctx: Context, doc_id: str, sql: str, username: str = "", password:
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    with MacroLoader():
-        data_source = doc.getDataSource()
-        connection = data_source.getConnection(username, password)
-        statement = connection.createStatement()
-        if sql.lower().strip().startswith("select"):
-            result_set = statement.executeQuery(sql)
-            meta_data = result_set.getMetaData()
-            column_count = meta_data.getColumnCount()
-            results = []
-            while result_set.next():
-                row = {}
-                for i in range(1, column_count + 1):
-                    row[meta_data.getColumnName(i)] = result_set.getString(i)
-                results.append(row)
-            return results
-        else:
-            affected_rows = statement.executeUpdate(sql)
-            return f"Affected {affected_rows} rows"
+    data_source = doc.getDataSource()
+    connection = data_source.getConnection(username, password)
+    statement = connection.createStatement()
+    if sql.lower().strip().startswith("select"):
+        result_set = statement.executeQuery(sql)
+        meta_data = result_set.getMetaData()
+        column_count = meta_data.getColumnCount()
+        results = []
+        while result_set.next():
+            row = {}
+            for i in range(1, column_count + 1):
+                row[meta_data.getColumnName(i)] = result_set.getString(i)
+            results.append(row)
+        return results
+    else:
+        affected_rows = statement.executeUpdate(sql)
+        return f"Affected {affected_rows} rows"
 
 @mcp.tool()
 def list_tables(ctx: Context, doc_id: str) -> List[str]:
@@ -316,15 +307,14 @@ def list_tables(ctx: Context, doc_id: str) -> List[str]:
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    with MacroLoader():
-        data_source = doc.getDataSource()
-        connection = data_source.getConnection("", "")
-        meta_data = connection.getMetaData()
-        result_set = meta_data.getTables(None, None, "%", None)
-        tables = []
-        while result_set.next():
-            tables.append(result_set.getString(3))  # Table name is in column 3
-        return tables
+    data_source = doc.getDataSource()
+    connection = data_source.getConnection("", "")
+    meta_data = connection.getMetaData()
+    result_set = meta_data.getTables(None, None, "%", None)
+    tables = []
+    while result_set.next():
+        tables.append(result_set.getString(3))  # Table name is in column 3
+    return tables
 
 @mcp.tool()
 def create_table(ctx: Context, doc_id: str, table_name: str, columns: List[Dict[str, str]]) -> str:
@@ -342,13 +332,12 @@ def create_table(ctx: Context, doc_id: str, table_name: str, columns: List[Dict[
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    with MacroLoader():
-        data_source = doc.getDataSource()
-        connection = data_source.getConnection("", "")
-        statement = connection.createStatement()
-        column_defs = ", ".join(f"{col['name']} {col['type']}" for col in columns)
-        sql = f"CREATE TABLE {table_name} ({column_defs})"
-        statement.executeUpdate(sql)
+    data_source = doc.getDataSource()
+    connection = data_source.getConnection("", "")
+    statement = connection.createStatement()
+    column_defs = ", ".join(f"{col['name']} {col['type']}" for col in columns)
+    sql = f"CREATE TABLE {table_name} ({column_defs})"
+    statement.executeUpdate(sql)
     return f"Created table '{table_name}'"
 
 @mcp.tool()
@@ -358,14 +347,13 @@ def insert_data(ctx: Context, doc_id: str, table_name: str, data: Dict[str, str]
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    with MacroLoader():
-        data_source = doc.getDataSource()
-        connection = data_source.getConnection("", "")
-        statement = connection.createStatement()
-        columns = ", ".join(data.keys())
-        values = ", ".join([f"'{v}'" if isinstance(v, str) else str(v) for v in data.values()])
-        sql = f"INSERT INTO {table_name} ({columns}) VALUES ({values})"
-        affected_rows = statement.executeUpdate(sql)
+    data_source = doc.getDataSource()
+    connection = data_source.getConnection("", "")
+    statement = connection.createStatement()
+    columns = ", ".join(data.keys())
+    values = ", ".join([f"'{v}'" if isinstance(v, str) else str(v) for v in data.values()])
+    sql = f"INSERT INTO {table_name} ({columns}) VALUES ({values})"
+    affected_rows = statement.executeUpdate(sql)
     return f"Inserted {affected_rows} row(s) into '{table_name}'"
 
 @mcp.tool()
@@ -375,11 +363,10 @@ def create_form(ctx: Context, doc_id: str, table_name: str, form_name: str) -> s
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    with MacroLoader():
-        forms = Forms(doc=doc)
-        form = forms.insert_form(name=form_name)
-        form.setPropertyValue("ContentType", "Table")
-        form.setPropertyValue("Command", table_name)
+    forms = Forms(doc=doc)
+    form = forms.insert_form(name=form_name)
+    form.setPropertyValue("ContentType", "Table")
+    form.setPropertyValue("Command", table_name)
     return f"Created form '{form_name}' linked to table '{table_name}'"
 
 @mcp.tool()
@@ -389,11 +376,10 @@ def create_report(ctx: Context, doc_id: str, table_name: str, report_name: str) 
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    with MacroLoader():
-        report_designer = Lo.create_instance_mcf("com.sun.star.report.pentaho.SOReportJobFactory", loader=app_ctx.loader)
-        report = report_designer.createReport()
-        report.setPropertyValue("Command", table_name)
-        report.setPropertyValue("Caption", report_name)
+    report_designer = Lo.create_instance_mcf("com.sun.star.report.pentaho.SOReportJobFactory", loader=app_ctx.loader)
+    report = report_designer.createReport()
+    report.setPropertyValue("Command", table_name)
+    report.setPropertyValue("Caption", report_name)
     return f"Created report '{report_name}' based on table '{table_name}'"
 
 # Writer Tools
@@ -427,10 +413,11 @@ def apply_style(ctx: Context, doc_id: str, style_name: str, start: int, end: int
     Write.style(cursor, style_name)
     return f"Applied style '{style_name}' to text from position {start} to {end}"
 
-# Additional Tools (Macros, Forms, etc.)
+# Additional Tools
 @mcp.tool()
 def run_macro(ctx: Context, doc_id: str, macro_name: str) -> str:
     """Run a Python macro in a document."""
+    from ooodev.macro.macro_loader import MacroLoader
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
