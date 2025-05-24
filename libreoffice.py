@@ -1,101 +1,298 @@
-import uno
-from com.sun.star.connection import NoConnectException
-from com.sun.star.uno import RuntimeException
-from com.sun.star.sheet import XSpreadsheetDocument, XDataPilotTables, XDataPilotDescriptor
-from com.sun.star.text import XTextDocument
-from com.sun.star.table import CellContentType
-from com.sun.star.chart import XChartDocument
-from com.sun.star.beans import PropertyValue
-from com.sun.star.util import SortField, SortDescriptor
-from com.sun.star.sheet import TableFilterField
-from com.sun.star.sdb import XOfficeDatabaseDocument
-from com.sun.star.sdbc import XDataSource, XConnection, XStatement, XResultSet
-from com.sun.star.sheet import XConditionalFormat, XConditionEntry
-from com.sun.star.drawing import XShape
+import os
+from typing import List, Dict
+from ooodev.loader import Lo
+from ooodev.loader.inst.options import Options
+from ooodev.office.calc import Calc, CalcDoc
+from ooodev.office.write import Write, WriteDoc
+from ooodev.office.draw import Draw, DrawDoc
+from ooodev.office.chart2 import Chart2
+from ooodev.utils.kind.chart2_types import ChartTypes
+from ooodev.utils.kind.zoom_kind import ZoomKind
+from ooodev.units import UnitMM
+from ooodev.form.forms import Forms
+from ooodev.macro.macro_loader import MacroLoader
+from ooodev.utils.info import Info
 from mcp.server.fastmcp import FastMCP, Context
 from contextlib import asynccontextmanager
 
-UnoRuntime = uno.getComponentContext().ServiceManager.createInstance("com.sun.star.uno.UnoRuntime")
-
 class AppContext:
-    def __init__(self, uno_context):
-        self.uno_context = uno_context
-        self.documents = {}
+    """Manages OooDev loader and document state."""
+    def __init__(self):
+        self.loader = None
+        self.documents = {}  # Maps doc_id to document objects (e.g., CalcDoc, WriteDoc)
         self.next_id = 0
 
-    def open_document(self, url):
-        desktop = self.uno_context.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", self.uno_context)
-        xComp = desktop.loadComponentFromURL(url, "_blank", 0, tuple([]))
-        doc_id = str(self.next_id)
-        self.next_id += 1
-        self.documents[doc_id] = xComp
-        return doc_id
+    def start_office(self):
+        """Initialize LibreOffice connection via OooDev."""
+        if self.loader is None:
+            self.loader = Lo.load_office(
+                connector=Lo.ConnectSocket(),
+                opt=Options(log_level="INFO")
+            )
+        return self.loader
 
-    def get_document(self, doc_id):
+    def get_document(self, doc_id: str):
+        """Retrieve a document by ID."""
         return self.documents.get(doc_id)
 
-    def close_document(self, doc_id):
-        doc = self.documents.pop(doc_id, None)
-        if doc:
-            doc.dispose()
+    def add_document(self, doc_id: str, doc):
+        """Store a document with a unique ID."""
+        self.documents[doc_id] = doc
 
-def get_uno_context():
-    localContext = uno.getComponentContext()
-    resolver = localContext.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", localContext)
-    try:
-        context = resolver.resolve("uno:socket,host=localhost,port=2083;urp;StarOffice.ComponentContext")
-        return context
-    except NoConnectException:
-        raise Exception("Error: cannot establish a connection to LibreOffice.")
+    def remove_document(self, doc_id: str):
+        """Remove a document from the store."""
+        self.documents.pop(doc_id, None)
+
+    def close_office(self):
+        """Close the LibreOffice instance."""
+        if self.loader is not None:
+            Lo.close_office()
+            self.loader = None
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
-    uno_context = get_uno_context()
-    app_ctx = AppContext(uno_context)
+    app_ctx = AppContext()
     try:
+        app_ctx.start_office()
         yield app_ctx
     finally:
-        for doc in list(app_ctx.documents.values()):
-            doc.dispose()
+        for doc_id in list(app_ctx.documents.keys()):
+            doc = app_ctx.get_document(doc_id)
+            if doc:
+                doc.close_doc()
+            app_ctx.remove_document(doc_id)
+        app_ctx.close_office()
 
-mcp = FastMCP("LibreOffice MCP", lifespan=app_lifespan)
+# Plugin-specific MCP server
+mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 
-# Existing Tools (assumed from previous implementation)
+# Core Document Management Tools
 @mcp.tool()
-def open_database(ctx: Context, url: str) -> str:
+def open_document(ctx: Context, url: str, doc_type: str) -> str:
+    """Open an existing LibreOffice document from a URL.
+
+    Args:
+        url (str): File path to the document (e.g., '/path/to/doc.odt').
+        doc_type (str): Type of document ('writer', 'calc', 'draw', 'impress', 'base').
+
+    Returns:
+        str: Document ID for future reference.
+    """
     app_ctx = ctx.request_context.lifespan_context
-    desktop = app_ctx.uno_context.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", app_ctx.uno_context)
-    xComp = desktop.loadComponentFromURL(url, "_blank", 0, tuple([]))
-    doc_id = str(app_ctx.next_id)
-    app_ctx.next_id += 1
-    app_ctx.documents[doc_id] = xComp
-    return doc_id
+    doc_types = {
+        "writer": WriteDoc,
+        "calc": CalcDoc,
+        "draw": DrawDoc,
+        "impress": DrawDoc,  # Impress uses DrawDoc
+        "base": None  # Handled separately
+    }
+    if doc_type not in doc_types:
+        raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
+    try:
+        if doc_type == "base":
+            doc = Lo.open_doc(fnm=url, loader=app_ctx.loader)
+        else:
+            doc_class = doc_types[doc_type]
+            doc = doc_class.from_path(fnm=url, lo_inst=app_ctx.loader)
+        doc_id = f"doc_{app_ctx.next_id}"
+        app_ctx.next_id += 1
+        app_ctx.add_document(doc_id, doc)
+        return doc_id
+    except Exception as e:
+        raise RuntimeException(f"Failed to open document: {str(e)}")
 
 @mcp.tool()
-def create_database(ctx: Context, url: str) -> str:
+def new_document(ctx: Context, doc_type: str) -> str:
+    """Create a new LibreOffice document of the specified type.
+
+    Args:
+        doc_type (str): Type of document ('writer', 'calc', 'draw', 'impress', 'base').
+
+    Returns:
+        str: Document ID for future reference.
+    """
     app_ctx = ctx.request_context.lifespan_context
-    desktop = app_ctx.uno_context.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", app_ctx.uno_context)
-    db_doc = desktop.loadComponentFromURL("private:factory/sdatabase", "_blank", 0, tuple([]))
-    save_opts = (
-        PropertyValue(Name="URL", Value=url),
-        PropertyValue(Name="FilterName", Value="StarOffice XML (Base)"),
-    )
-    db_doc.storeAsURL(url, save_opts)
-    doc_id = str(app_ctx.next_id)
-    app_ctx.next_id += 1
-    app_ctx.documents[doc_id] = db_doc
-    return doc_id
+    doc_types = {
+        "writer": WriteDoc,
+        "calc": CalcDoc,
+        "draw": DrawDoc,
+        "impress": DrawDoc,  # Impress uses DrawDoc
+        "base": None  # Handled separately
+    }
+    if doc_type not in doc_types:
+        raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
+    try:
+        if doc_type == "base":
+            doc = Lo.create_doc(doc_type="sbase", loader=app_ctx.loader)
+        else:
+            doc_class = doc_types[doc_type]
+            doc = doc_class.create_doc(lo_inst=app_ctx.loader)
+        doc_id = f"doc_{app_ctx.next_id}"
+        app_ctx.next_id += 1
+        app_ctx.add_document(doc_id, doc)
+        return doc_id
+    except Exception as e:
+        raise RuntimeException(f"Failed to create new document: {str(e)}")
 
 @mcp.tool()
-def run_query(ctx: Context, doc_id: str, sql: str, username: str = "", password: str = "") -> list[dict] | str:
+def save_document(ctx: Context, doc_id: str, url: str) -> str:
+    """Save a document to a specified URL.
+
+    Args:
+        doc_id (str): Document ID.
+        url (str): File path to save the document.
+
+    Returns:
+        str: Confirmation message.
+    """
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    db_doc = UnoRuntime.queryInterface(XOfficeDatabaseDocument, doc)
-    if not db_doc:
-        raise RuntimeException("Document is not a database document")
-    data_source = db_doc.getDataSource()
+    try:
+        doc.save_doc(fnm=url)
+        return f"Document saved to {url}"
+    except Exception as e:
+        raise RuntimeException(f"Failed to save document: {str(e)}")
+
+@mcp.tool()
+def close_document(ctx: Context, doc_id: str) -> str:
+    """Close a LibreOffice document.
+
+    Args:
+        doc_id (str): Document ID.
+
+    Returns:
+        str: Confirmation message.
+    """
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc:
+        raise RuntimeException("Document not found")
+    try:
+        doc.close_doc()
+        app_ctx.remove_document(doc_id)
+        return f"Document {doc_id} closed"
+    except Exception as e:
+        raise RuntimeException(f"Failed to close document: {str(e)}")
+
+# Calc (Spreadsheet) Tools
+@mcp.tool()
+def get_sheet_names(ctx: Context, doc_id: str) -> List[str]:
+    """Get a list of sheet names in a spreadsheet document."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    return doc.get_sheet_names()
+
+@mcp.tool()
+def get_cell_value(ctx: Context, doc_id: str, sheet_name: str, cell_address: str) -> str:
+    """Get the value of a cell in a spreadsheet."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    sheet = doc.sheets.get_by_name(sheet_name)
+    cell = sheet[cell_address]
+    if cell.is_empty():
+        return ""
+    return str(cell.value)
+
+@mcp.tool()
+def set_cell_value(ctx: Context, doc_id: str, sheet_name: str, cell_address: str, value: str) -> str:
+    """Set the value of a cell in a spreadsheet."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    sheet = doc.sheets.get_by_name(sheet_name)
+    try:
+        cell = sheet[cell_address]
+        cell.value = float(value)
+    except ValueError:
+        cell.value = value
+    return f"Set {cell_address} to {value}"
+
+@mcp.tool()
+def create_new_sheet(ctx: Context, doc_id: str, sheet_name: str) -> str:
+    """Create a new sheet in a spreadsheet document."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    doc.sheets.insert_new_by_name(sheet_name, len(doc.get_sheet_names()))
+    return f"Created new sheet '{sheet_name}'"
+
+# Data Analysis Tools (Calc)
+@mcp.tool()
+def create_pivot_table(ctx: Context, doc_id: str, sheet_name: str, source_range: str, target_cell: str) -> str:
+    """Create a pivot table from a data range in a spreadsheet."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    sheet = doc.sheets.get_by_name(sheet_name)
+    tbl_chart = sheet.charts.insert_chart(
+        rng_obj=sheet.rng(source_range),
+        cell_name=target_cell,
+        width=15,
+        height=11,
+        diagram_name=ChartTypes.Pivot.TEMPLATE_PIVOT.PIVOT
+    )
+    return f"Created pivot table at {target_cell}"
+
+@mcp.tool()
+def sort_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, sort_column: int, ascending: bool) -> str:
+    """Sort a range in a spreadsheet by a specified column."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    sheet = doc.sheets.get_by_name(sheet_name)
+    rng = sheet.rng(range_address)
+    sort_field = SortField()
+    sort_field.Field = sort_column
+    sort_field.SortAscending = ascending
+    rng.sort([sort_field])
+    return f"Sorted range {range_address} by column {sort_column} {'ascending' if ascending else 'descending'}"
+
+@mcp.tool()
+def calculate_statistics(ctx: Context, doc_id: str, sheet_name: str, range_address: str) -> Dict[str, float]:
+    """Calculate basic statistics (sum, average) for a range in a spreadsheet."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, CalcDoc):
+        raise RuntimeException("Document is not a spreadsheet")
+    sheet = doc.sheets.get_by_name(sheet_name)
+    rng = sheet.rng(range_address)
+    values = [cell.value for cell in rng if isinstance(cell.value, (int, float))]
+    if not values:
+        return {"sum": 0.0, "average": 0.0}
+    total = sum(values)
+    average = total / len(values)
+    return {"sum": total, "average": average}
+
+# Base (Database) Tools
+@mcp.tool()
+def run_query(ctx: Context, doc_id: str, sql: str, username: str = "", password: str = "") -> List[Dict[str, str]] | str:
+    """Execute an SQL query on a Base database.
+
+    Args:
+        doc_id (str): Document ID.
+        sql (str): SQL query to execute.
+        username (str, optional): Database username.
+        password (str, optional): Database password.
+
+    Returns:
+        List[Dict[str, str]] | str: Query results as a list of dictionaries for SELECT queries,
+                                   or a message for other queries.
+    """
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc:
+        raise RuntimeException("Document not found")
+    data_source = doc.getDataSource()
     connection = data_source.getConnection(username, password)
     statement = connection.createStatement()
     if sql.lower().strip().startswith("select"):
@@ -114,157 +311,13 @@ def run_query(ctx: Context, doc_id: str, sql: str, username: str = "", password:
         return f"Affected {affected_rows} rows"
 
 @mcp.tool()
-def create_table(ctx: Context, doc_id: str, table_name: str) -> str:
+def list_tables(ctx: Context, doc_id: str) -> List[str]:
+    """List all tables in a Base database."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    db_doc = UnoRuntime.queryInterface(XOfficeDatabaseDocument, doc)
-    if not db_doc:
-        raise RuntimeException("Document is not a database document")
-    data_source = db_doc.getDataSource()
-    connection = data_source.getConnection("", "")
-    statement = connection.createStatement()
-    sql = f"CREATE TABLE {table_name} (ID INTEGER PRIMARY KEY, Name VARCHAR(50))"
-    statement.executeUpdate(sql)
-    return f"Created table '{table_name}'"
-
-@mcp.tool()
-def create_pivot_table(ctx: Context, doc_id: str, sheet_name: str, source_range: str, target_cell: str) -> str:
-    app_ctx = ctx.request_context.lifespan_context
-    doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
-        raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(source_range.split(':')[0])
-    end_col, end_row = parse_cell_address(source_range.split(':')[1])
-    source_addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
-    source_addr.Sheet = sheets.getIndex(sheet_name)
-    source_addr.StartColumn = start_col
-    source_addr.StartRow = start_row
-    source_addr.EndColumn = end_col
-    source_addr.EndRow = end_row
-    target_col, target_row = parse_cell_address(target_cell)
-    target_addr = uno.createUnoStruct("com.sun.star.table.CellAddress")
-    target_addr.Sheet = sheets.getIndex(sheet_name)
-    target_addr.Column = target_col
-    target_addr.Row = target_row
-    data_pilot_tables = sheet.getDataPilotTables()
-    dp_table = data_pilot_tables.createDataPilotTable(target_addr)
-    descriptor = dp_table.getDataPilotDescriptor()
-    descriptor.setSourceRange(source_addr)
-    row_field = descriptor.getRowFields().createField()
-    row_field.setPropertyValue("Orientation", "ROW")
-    row_field.setPropertyValue("Field", 0)
-    data_field = descriptor.getDataFields().createField()
-    data_field.setPropertyValue("Orientation", "DATA")
-    data_field.setPropertyValue("Field", end_col - start_col)
-    data_field.setPropertyValue("Function", "SUM")
-    dp_table.refresh()
-    return f"Created pivot table at {target_cell}"
-
-@mcp.tool()
-def sort_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, sort_column: int, ascending: bool) -> str:
-    app_ctx = ctx.request_context.lifespan_context
-    doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
-        raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(range_address.split(':')[0])
-    end_col, end_row = parse_cell_address(range_address.split(':')[1])
-    range = sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
-    sort_desc = range.createSortDescriptor()
-    for desc in sort_desc:
-        if desc.Name == "SortFields":
-            sort_field = SortField()
-            sort_field.Field = sort_column
-            sort_field.SortAscending = ascending
-            desc.Value = [sort_field]
-    range.sort(sort_desc)
-    return f"Sorted range {range_address} by column {sort_column} {'ascending' if ascending else 'descending'}"
-
-@mcp.tool()
-def filter_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, column: int, operator: str, value: str) -> str:
-    app_ctx = ctx.request_context.lifespan_context
-    doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
-        raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(range_address.split(':')[0])
-    end_col, end_row = parse_cell_address(range_address.split(':')[1])
-    range = sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
-    filter_desc = range.createFilterDescriptor(True)
-    filter_field = TableFilterField()
-    filter_field.Field = column
-    filter_field.Operator = operator
-    filter_field.IsNumeric = value.isdigit()
-    filter_field.StringValue = value if not filter_field.IsNumeric else ""
-    filter_field.NumericValue = float(value) if filter_field.IsNumeric else 0.0
-    filter_desc.setFilterFields([filter_field])
-    range.filter(filter_desc)
-    return f"Applied filter to range {range_address} on column {column} with {operator} {value}"
-
-@mcp.tool()
-def calculate_statistics(ctx: Context, doc_id: str, sheet_name: str, range_address: str) -> dict:
-    app_ctx = ctx.request_context.lifespan_context
-    doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
-        raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(range_address.split(':')[0])
-    end_col, end_row = parse_cell_address(range_address.split(':')[1])
-    range = sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
-    values = []
-    for row in range(start_row, end_row + 1):
-        for col in range(start_col, end_col + 1):
-            cell = sheet.getCellByPosition(col, row)
-            if cell.getType() == CellContentType.VALUE:
-                values.append(cell.getValue())
-    if not values:
-        return {"sum": 0, "average": 0}
-    total = sum(values)
-    average = total / len(values)
-    return {"sum": total, "average": average}
-
-# New Base Tools
-@mcp.tool()
-def list_tables(ctx: Context, doc_id: str) -> list[str]:
-    app_ctx = ctx.request_context.lifespan_context
-    doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    db_doc = UnoRuntime.queryInterface(XOfficeDatabaseDocument, doc)
-    if not db_doc:
-        raise RuntimeException("Document is not a database document")
-    data_source = db_doc.getDataSource()
+    data_source = doc.getDataSource()
     connection = data_source.getConnection("", "")
     meta_data = connection.getMetaData()
     result_set = meta_data.getTables(None, None, "%", None)
@@ -274,31 +327,37 @@ def list_tables(ctx: Context, doc_id: str) -> list[str]:
     return tables
 
 @mcp.tool()
-def delete_table(ctx: Context, doc_id: str, table_name: str) -> str:
+def create_table(ctx: Context, doc_id: str, table_name: str, columns: List[Dict[str, str]]) -> str:
+    """Create a new table in a Base database.
+
+    Args:
+        doc_id (str): Document ID.
+        table_name (str): Name of the table.
+        columns (List[Dict[str, str]]): List of column definitions (e.g., [{"name": "ID", "type": "INTEGER PRIMARY KEY"}, {"name": "Name", "type": "VARCHAR(50)"}]).
+
+    Returns:
+        str: Confirmation message.
+    """
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    db_doc = UnoRuntime.queryInterface(XOfficeDatabaseDocument, doc)
-    if not db_doc:
-        raise RuntimeException("Document is not a database document")
-    data_source = db_doc.getDataSource()
+    data_source = doc.getDataSource()
     connection = data_source.getConnection("", "")
     statement = connection.createStatement()
-    sql = f"DROP TABLE {table_name}"
+    column_defs = ", ".join(f"{col['name']} {col['type']}" for col in columns)
+    sql = f"CREATE TABLE {table_name} ({column_defs})"
     statement.executeUpdate(sql)
-    return f"Deleted table '{table_name}'"
+    return f"Created table '{table_name}'"
 
 @mcp.tool()
-def insert_data(ctx: Context, doc_id: str, table_name: str, data: dict) -> str:
+def insert_data(ctx: Context, doc_id: str, table_name: str, data: Dict[str, str]) -> str:
+    """Insert a row of data into a Base table."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    db_doc = UnoRuntime.queryInterface(XOfficeDatabaseDocument, doc)
-    if not db_doc:
-        raise RuntimeException("Document is not a database document")
-    data_source = db_doc.getDataSource()
+    data_source = doc.getDataSource()
     connection = data_source.getConnection("", "")
     statement = connection.createStatement()
     columns = ", ".join(data.keys())
@@ -307,91 +366,65 @@ def insert_data(ctx: Context, doc_id: str, table_name: str, data: dict) -> str:
     affected_rows = statement.executeUpdate(sql)
     return f"Inserted {affected_rows} row(s) into '{table_name}'"
 
-# New Data Analysis Tools
+# Writer Tools
 @mcp.tool()
-def create_chart(ctx: Context, doc_id: str, sheet_name: str, data_range: str, chart_type: str, target_cell: str) -> str:
+def insert_text(ctx: Context, doc_id: str, text: str, position: int) -> str:
+    """Insert text into a Writer document at a specified position."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, WriteDoc):
+        raise RuntimeException("Document is not a text document")
+    cursor = doc.get_cursor()
+    total_length = len(Write.get_text_string(cursor))
+    if position < 0 or position > total_length:
+        raise RuntimeException(f"Position {position} out of range (0-{total_length})")
+    cursor.goto_start(False)
+    cursor.go_right(position, False)
+    Write.append(cursor, text)
+    return f"Inserted '{text}' at position {position}"
+
+@mcp.tool()
+def apply_style(ctx: Context, doc_id: str, style_name: str, start: int, end: int) -> str:
+    """Apply a paragraph style to a text range in a Writer document."""
+    app_ctx = ctx.request_context.lifespan_context
+    doc = app_ctx.get_document(doc_id)
+    if not doc or not isinstance(doc, WriteDoc):
+        raise RuntimeException("Document is not a text document")
+    cursor = doc.get_cursor()
+    cursor.goto_start(False)
+    cursor.go_right(start, False)
+    cursor.go_right(end - start, True)
+    Write.style(cursor, style_name)
+    return f"Applied style '{style_name}' to text from position {start} to {end}"
+
+# Additional Tools (Macros, Forms, etc.)
+@mcp.tool()
+def run_macro(ctx: Context, doc_id: str, macro_name: str) -> str:
+    """Run a Python macro in a document."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
         raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
-        raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(data_range.split(':')[0])
-    end_col, end_row = parse_cell_address(data_range.split(':')[1])
-    data_addr = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
-    data_addr.Sheet = sheets.getIndex(sheet_name)
-    data_addr.StartColumn = start_col
-    data_addr.StartRow = start_row
-    data_addr.EndColumn = end_col
-    data_addr.EndRow = end_row
-    target_col, target_row = parse_cell_address(target_cell)
-    chart = sheet.getCharts().addNewByName(f"Chart_{target_cell}", 
-                                            uno.createUnoStruct("com.sun.star.awt.Rectangle", 
-                                                                target_col * 1000, target_row * 1000, 15000, 10000),
-                                            [data_addr])
-    chart_doc = chart.getEmbeddedObject()
-    chart_doc.getDiagram().setPropertyValue("Type", chart_type.upper())  # e.g., "BAR", "LINE"
-    return f"Created {chart_type} chart at {target_cell}"
+    with MacroLoader():
+        script = doc.getScriptProvider().getScript(f"vnd.sun.star.script:{macro_name}?language=Python&location=document")
+        script.invoke((), (), ())
+    return f"Executed macro '{macro_name}'"
 
 @mcp.tool()
-def apply_conditional_formatting(ctx: Context, doc_id: str, sheet_name: str, range_address: str, condition: str, style: str) -> str:
+def insert_form_control(ctx: Context, doc_id: str, sheet_name: str, cell_address: str, control_type: str, label: str) -> str:
+    """Insert a form control into a Calc sheet."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
+    if not doc or not isinstance(doc, CalcDoc):
         raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(range_address.split(':')[0])
-    end_col, end_row = parse_cell_address(range_address.split(':')[1])
-    range = sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
-    cond_format = range.createConditionalFormat()
-    entry = cond_format.createConditionEntryByType("CONDITION")
-    entry.setPropertyValue("Formula1", condition)  # e.g., "A1>10"
-    entry.setPropertyValue("StyleName", style)
-    cond_format.addNew([entry])
-    range.setPropertyValue("ConditionalFormat", cond_format)
-    return f"Applied conditional formatting to {range_address} with condition '{condition}' and style '{style}'"
-
-@mcp.tool()
-def group_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, by_rows: bool) -> str:
-    app_ctx = ctx.request_context.lifespan_context
-    doc = app_ctx.get_document(doc_id)
-    if not doc:
-        raise RuntimeException("Document not found")
-    xSheetDoc = UnoRuntime.queryInterface(XSpreadsheetDocument, doc)
-    if not xSheetDoc:
-        raise RuntimeException("Document is not a spreadsheet")
-    sheets = xSheetDoc.getSheets()
-    try:
-        sheet = sheets.getByName(sheet_name)
-    except Exception:
-        raise RuntimeException(f"Sheet '{sheet_name}' not found")
-    start_col, start_row = parse_cell_address(range_address.split(':')[0])
-    end_col, end_row = parse_cell_address(range_address.split(':')[1])
-    range = sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
-    if by_rows:
-        range.Rows.group(None, True)
-    else:
-        range.Columns.group(None, True)
-    return f"Grouped range {range_address} by {'rows' if by_rows else 'columns'}"
-
-def parse_cell_address(address: str) -> tuple[int, int]:
-    if not address or not address[0].isalpha() or not address[1:].isdigit():
-        raise RuntimeException(f"Invalid cell address: {address}")
-    col = ord(address[0].upper()) - ord('A')
-    row = int(address[1:]) - 1
-    if col < 0 or row < 0:
-        raise RuntimeException(f"Invalid cell address: {address}")
-    return col, row
+    sheet = doc.sheets.get_by_name(sheet_name)
+    cell = sheet[cell_address]
+    control_types = {
+        "checkbox": Forms.insert_control_check_box,
+        "button": Forms.insert_control_button,
+        "listbox": Forms.insert_control_list_box
+    }
+    if control_type not in control_types:
+        raise RuntimeException(f"Invalid control type. Use: {', '.join(control_types.keys())}")
+    control = control_types[control_type](cell=cell, label=label)
+    return f"Inserted {control_type} control '{label}' at {cell_address}"
