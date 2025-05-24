@@ -1,4 +1,21 @@
-### Original Features\*\*:
+# **LibreOffice MCP (WIP)**
+
+- **Coverage Across Applications**: The adapter now supports Writer, Calc, Impress, and Draw, with potential for more Base and Math tools to be added.
+- **Rich Feature Set**: It includes not just basic operations (e.g., opening documents, setting cell values) but also advanced features like styling, table insertion, image handling, charting, slide management, and shape drawing.
+- **Cross-Cutting Functionality**: Tools like saving, exporting to PDF, and managing document properties apply to all LibreOffice document types, enhancing versatility.
+- **Error Handling**: Each tool includes robust checks (e.g., document existence, type validation) to ensure reliability.
+
+```
+sudo useradd -m -s /bin/bash mcp-libreoffice
+sudo mkdir -p /home/mcp-libreoffice/output
+sudo chown -R mcp-libreoffice:mcp-libreoffice /home/mcp-libreoffice
+```
+
+```
+sudo -u mcp-libreoffice soffice --headless --accept="socket,host=localhost,port=${LIBREOFFICE_PORT:-2083};urp;"
+```
+
+### **Original Features**:
 
 - **`open_document`**: Opens a document from a URL and assigns it an ID.
 - **`close_document`**: Closes a document by its ID.
