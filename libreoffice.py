@@ -10,6 +10,7 @@ from ooodev.utils.kind.chart2_types import ChartTypes
 from ooodev.utils.kind.zoom_kind import ZoomKind
 from ooodev.units import UnitMM
 from ooodev.form.forms import Forms
+from ooodev.utils.color import StandardColor
 from mcp.server.fastmcp import FastMCP, Context
 from contextlib import asynccontextmanager
 import logging
@@ -27,9 +28,9 @@ class AppContext:
     """Manages OooDev loader and document state."""
     def __init__(self):
         self.loader = None
-        self.documents = {}  # Maps doc_id to document objects (e.g., CalcDoc, WriteDoc)
+        self.documents = {}
         self.next_id = 0
-        self.output_dir = os.getenv("LIBREOFFICE_OUTPUT_DIR", "/home/mcp-libreoffice/output")
+        self.output_dir = os.getenv("LIBREOFFICE_OUTPUT_DIR", "/home/open-webui/output")
         os.makedirs(self.output_dir, exist_ok=True)
 
     def start_office(self):
@@ -63,23 +64,45 @@ class AppContext:
             Lo.close_office()
             self.loader = None
 
-    def format_table(self, doc_id: str, sheet_name: str, range_address: str, border_width: int, background_color: str):
-        """Format a table range in a Calc document with borders and background color."""
+    def format_cell_range(self, doc_id: str, sheet_name: str, range_address: str, font_name: str = "Arial", font_size: int = 12, bold: bool = False, italic: bool = False, alignment: str = "center"):
+        """Format a cell range in a Calc document with font, style, and alignment."""
         doc = self.get_document(doc_id)
         if not doc or not isinstance(doc, CalcDoc):
             raise RuntimeException("Document is not a spreadsheet")
         sheet = doc.sheets.get_by_name(sheet_name)
         rng = sheet.rng(range_address)
-        # Apply borders
-        border = rng.get_border()
-        border.set_all_width(UnitMM(border_width))
-        rng.set_border(border)
-        # Apply background color (e.g., "#FFFF00" for yellow)
-        rng.set_background_color(background_color)
-        return f"Formatted table {range_address} with border width {border_width} and background {background_color}"
+        rng.set_font_name(font_name)
+        rng.set_font_size(font_size)
+        if bold:
+            rng.set_font_weight(150.0)
+        if italic:
+            rng.set_font_slant(1)
+        alignment_map = {
+            "left": "LEFT",
+            "center": "CENTER",
+            "right": "RIGHT"
+        }
+        if alignment.lower() not in alignment_map:
+            raise RuntimeException(f"Invalid alignment. Use: {', '.join(alignment_map.keys())}")
+        rng.set_hori_justification(alignment_map[alignment.lower()])
+        return f"Formatted range {range_address} with {font_name} {font_size}pt, bold={bold}, italic={italic}, aligned {alignment}"
 
-    def create_chart(self, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str):
-        """Create a chart in a Calc document."""
+    def conditional_format(self, doc_id: str, sheet_name: str, range_address: str, threshold: float, above_color: str = "#FF0000", below_color: str = "#00FF00"):
+        """Apply conditional formatting to a cell range based on a threshold."""
+        doc = self.get_document(doc_id)
+        if not doc or not isinstance(doc, CalcDoc):
+            raise RuntimeException("Document is not a spreadsheet")
+        sheet = doc.sheets.get_by_name(sheet_name)
+        rng = sheet.rng(range_address)
+        for cell in rng:
+            if isinstance(cell.value, (int, float)) and cell.value > threshold:
+                cell.set_background_color(above_color)
+            elif isinstance(cell.value, (int, float)):
+                cell.set_background_color(below_color)
+        return f"Applied conditional formatting to {range_address} with threshold {threshold}"
+
+    def create_chart(self, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str, title: str = "", x_label: str = "", y_label: str = "", show_legend: bool = True, show_data_labels: bool = False):
+        """Create a chart in a Calc document with customization."""
         doc = self.get_document(doc_id)
         if not doc or not isinstance(doc, CalcDoc):
             raise RuntimeException("Document is not a spreadsheet")
@@ -99,7 +122,14 @@ class AppContext:
             height=11,
             diagram_name=chart_types[chart_type]
         )
-        return f"Created {chart_type} chart at {target_cell}"
+        if title:
+            chart.set_title(title)
+        if x_label or y_label:
+            chart.set_axis_labels(x_label=x_label, y_label=y_label)
+        chart.set_legend_visible(show_legend)
+        if show_data_labels:
+            chart.set_data_point_labels(True)
+        return f"Created {chart_type} chart at {target_cell} with title '{title}', legend={show_legend}, data_labels={show_data_labels}"
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
@@ -124,15 +154,7 @@ mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 # Core Document Management Tools
 @mcp.tool()
 def open_document(ctx: Context, url: str, doc_type: str) -> str:
-    """Open an existing LibreOffice document from a URL.
-
-    Args:
-        url (str): File path to the document (e.g., '/path/to/doc.odt').
-        doc_type (str): Type of document ('writer', 'calc', 'draw', 'impress', 'base').
-
-    Returns:
-        str: Document ID for future reference.
-    """
+    """Open an existing LibreOffice document from a URL."""
     app_ctx = ctx.request_context.lifespan_context
     doc_types = {
         "writer": WriteDoc,
@@ -148,7 +170,7 @@ def open_document(ctx: Context, url: str, doc_type: str) -> str:
             doc = Lo.open_doc(fnm=url, loader=app_ctx.loader)
         else:
             doc_class = doc_types[doc_type]
-            doc = doc_class.from_path(fnm=url, lo_inst=app_ctx.loader)
+            doc = doc_class.from_path(fnm=os.path.join(app_ctx.output_dir, url), lo_inst=app_ctx.loader)
         doc_id = f"doc_{app_ctx.next_id}"
         app_ctx.next_id += 1
         app_ctx.add_document(doc_id, doc)
@@ -158,14 +180,7 @@ def open_document(ctx: Context, url: str, doc_type: str) -> str:
 
 @mcp.tool()
 def new_document(ctx: Context, doc_type: str) -> str:
-    """Create a new LibreOffice document of the specified type.
-
-    Args:
-        doc_type (str): Type of document ('writer', 'calc', 'draw', 'impress', 'base').
-
-    Returns:
-        str: Document ID for future reference.
-    """
+    """Create a new LibreOffice document of the specified type."""
     app_ctx = ctx.request_context.lifespan_context
     doc_types = {
         "writer": WriteDoc,
@@ -191,15 +206,7 @@ def new_document(ctx: Context, doc_type: str) -> str:
 
 @mcp.tool()
 def save_document(ctx: Context, doc_id: str, url: str) -> str:
-    """Save a document to a specified URL.
-
-    Args:
-        doc_id (str): Document ID.
-        url (str): File path to save the document.
-
-    Returns:
-        str: Confirmation message.
-    """
+    """Save a document to a specified URL."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
@@ -212,14 +219,7 @@ def save_document(ctx: Context, doc_id: str, url: str) -> str:
 
 @mcp.tool()
 def close_document(ctx: Context, doc_id: str) -> str:
-    """Close a LibreOffice document.
-
-    Args:
-        doc_id (str): Document ID.
-
-    Returns:
-        str: Confirmation message.
-    """
+    """Close a LibreOffice document."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
@@ -492,13 +492,19 @@ def insert_form_control(ctx: Context, doc_id: str, sheet_name: str, cell_address
     return f"Inserted {control_type} control '{label}' at {cell_address}"
 
 @mcp.tool()
-def format_table(ctx: Context, doc_id: str, sheet_name: str, range_address: str, border_width: int, background_color: str) -> str:
-    """Format a table range in a Calc document with borders and background color."""
+def format_cell_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, font_name: str = "Arial", font_size: int = 12, bold: bool = False, italic: bool = False, alignment: str = "center") -> str:
+    """Format a cell range in a Calc document."""
     app_ctx = ctx.request_context.lifespan_context
-    return app_ctx.format_table(doc_id, sheet_name, range_address, border_width, background_color)
+    return app_ctx.format_cell_range(doc_id, sheet_name, range_address, font_name, font_size, bold, italic, alignment)
 
 @mcp.tool()
-def create_chart(ctx: Context, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str) -> str:
+def conditional_format(ctx: Context, doc_id: str, sheet_name: str, range_address: str, threshold: float, above_color: str = "#FF0000", below_color: str = "#00FF00") -> str:
+    """Apply conditional formatting to a cell range."""
+    app_ctx = ctx.request_context.lifespan_context
+    return app_ctx.conditional_format(doc_id, sheet_name, range_address, threshold, above_color, below_color)
+
+@mcp.tool()
+def create_chart(ctx: Context, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str, title: str = "", x_label: str = "", y_label: str = "", show_legend: bool = True, show_data_labels: bool = False) -> str:
     """Create a chart in a Calc document."""
     app_ctx = ctx.request_context.lifespan_context
-    return app_ctx.create_chart(doc_id, sheet_name, range_address, target_cell, chart_type)
+    return app_ctx.create_chart(doc_id, sheet_name, range_address, target_cell, chart_type, title, x_label, y_label, show_legend, show_data_labels)
