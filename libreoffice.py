@@ -1,7 +1,3 @@
-# mcp_libreoffice_ooodev_python3_uno.py
-# Requires python3-uno installed: sudo apt install python3-uno
-# Also requires ooo-dev-tools: pip install ooo-dev-tools
-
 from typing import List, Dict
 from ooodev.loader import Lo
 from ooodev.loader.inst.options import Options
@@ -16,6 +12,16 @@ from ooodev.units import UnitMM
 from ooodev.form.forms import Forms
 from mcp.server.fastmcp import FastMCP, Context
 from contextlib import asynccontextmanager
+import logging
+from dotenv import load_dotenv
+import os
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load environment variables from .env
+load_dotenv()
 
 class AppContext:
     """Manages OooDev loader and document state."""
@@ -23,14 +29,20 @@ class AppContext:
         self.loader = None
         self.documents = {}  # Maps doc_id to document objects (e.g., CalcDoc, WriteDoc)
         self.next_id = 0
+        self.output_dir = os.getenv("LIBREOFFICE_OUTPUT_DIR", "/home/mcp-libreoffice/output")
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def start_office(self):
         """Initialize LibreOffice connection via OooDev."""
         if self.loader is None:
-            self.loader = Lo.load_office(
-                connector=Lo.ConnectSocket(),
-                opt=Options(log_level="INFO")
-            )
+            try:
+                self.loader = Lo.load_office(
+                    connector=Lo.ConnectSocket(host="localhost", port=int(os.getenv("LIBREOFFICE_PORT", "2083"))),
+                    opt=Options(log_level="INFO")
+                )
+            except Exception as e:
+                logger.error(f"Failed to connect to LibreOffice: {e}")
+                raise
         return self.loader
 
     def get_document(self, doc_id: str):
@@ -51,12 +63,53 @@ class AppContext:
             Lo.close_office()
             self.loader = None
 
+    def format_table(self, doc_id: str, sheet_name: str, range_address: str, border_width: int, background_color: str):
+        """Format a table range in a Calc document with borders and background color."""
+        doc = self.get_document(doc_id)
+        if not doc or not isinstance(doc, CalcDoc):
+            raise RuntimeException("Document is not a spreadsheet")
+        sheet = doc.sheets.get_by_name(sheet_name)
+        rng = sheet.rng(range_address)
+        # Apply borders
+        border = rng.get_border()
+        border.set_all_width(UnitMM(border_width))
+        rng.set_border(border)
+        # Apply background color (e.g., "#FFFF00" for yellow)
+        rng.set_background_color(background_color)
+        return f"Formatted table {range_address} with border width {border_width} and background {background_color}"
+
+    def create_chart(self, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str):
+        """Create a chart in a Calc document."""
+        doc = self.get_document(doc_id)
+        if not doc or not isinstance(doc, CalcDoc):
+            raise RuntimeException("Document is not a spreadsheet")
+        sheet = doc.sheets.get_by_name(sheet_name)
+        chart_types = {
+            "column": ChartTypes.Column.TEMPLATE_STACKED.COLUMN,
+            "bar": ChartTypes.Bar.TEMPLATE_STACKED.BAR,
+            "line": ChartTypes.Line.TEMPLATE_LINE.LINE,
+            "pie": ChartTypes.Pie.TEMPLATE_DONUT.PIE
+        }
+        if chart_type not in chart_types:
+            raise RuntimeException(f"Invalid chart type. Use: {', '.join(chart_types.keys())}")
+        chart = sheet.charts.insert_chart(
+            rng_obj=sheet.rng(range_address),
+            cell_name=target_cell,
+            width=15,
+            height=11,
+            diagram_name=chart_types[chart_type]
+        )
+        return f"Created {chart_type} chart at {target_cell}"
+
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
     app_ctx = AppContext()
     try:
         app_ctx.start_office()
         yield app_ctx
+    except Exception as e:
+        logger.error(f"Error in LibreOffice lifespan: {e}")
+        raise
     finally:
         for doc_id in list(app_ctx.documents.keys()):
             doc = app_ctx.get_document(doc_id)
@@ -85,8 +138,8 @@ def open_document(ctx: Context, url: str, doc_type: str) -> str:
         "writer": WriteDoc,
         "calc": CalcDoc,
         "draw": DrawDoc,
-        "impress": DrawDoc,  # Impress uses DrawDoc
-        "base": None  # Handled separately
+        "impress": DrawDoc,
+        "base": None
     }
     if doc_type not in doc_types:
         raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
@@ -118,7 +171,7 @@ def new_document(ctx: Context, doc_type: str) -> str:
         "writer": WriteDoc,
         "calc": CalcDoc,
         "draw": DrawDoc,
-        "impress": DrawDoc,  # Impress uses DrawDoc
+        "impress": DrawDoc,
         "base": None
     }
     if doc_type not in doc_types:
@@ -152,7 +205,7 @@ def save_document(ctx: Context, doc_id: str, url: str) -> str:
     if not doc:
         raise RuntimeException("Document not found")
     try:
-        doc.save_doc(fnm=url)
+        doc.save_doc(fnm=os.path.join(app_ctx.output_dir, url))
         return f"Document saved to {url}"
     except Exception as e:
         raise RuntimeException(f"Failed to save document: {str(e)}")
@@ -314,21 +367,12 @@ def list_tables(ctx: Context, doc_id: str) -> List[str]:
     result_set = meta_data.getTables(None, None, "%", None)
     tables = []
     while result_set.next():
-        tables.append(result_set.getString(3))  # Table name is in column 3
+        tables.append(result_set.getString(3))
     return tables
 
 @mcp.tool()
 def create_table(ctx: Context, doc_id: str, table_name: str, columns: List[Dict[str, str]]) -> str:
-    """Create a new table in a Base database.
-
-    Args:
-        doc_id (str): Document ID.
-        table_name (str): Name of the table.
-        columns (List[Dict[str, str]]): List of column definitions (e.g., [{"name": "ID", "type": "INTEGER PRIMARY KEY"}, {"name": "Name", "type": "VARCHAR(50)"}]).
-
-    Returns:
-        str: Confirmation message.
-    """
+    """Create a new table in a Base database."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
@@ -446,3 +490,15 @@ def insert_form_control(ctx: Context, doc_id: str, sheet_name: str, cell_address
         raise RuntimeException(f"Invalid control type. Use: {', '.join(control_types.keys())}")
     control = control_types[control_type](cell=cell, label=label)
     return f"Inserted {control_type} control '{label}' at {cell_address}"
+
+@mcp.tool()
+def format_table(ctx: Context, doc_id: str, sheet_name: str, range_address: str, border_width: int, background_color: str) -> str:
+    """Format a table range in a Calc document with borders and background color."""
+    app_ctx = ctx.request_context.lifespan_context
+    return app_ctx.format_table(doc_id, sheet_name, range_address, border_width, background_color)
+
+@mcp.tool()
+def create_chart(ctx: Context, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str) -> str:
+    """Create a chart in a Calc document."""
+    app_ctx = ctx.request_context.lifespan_context
+    return app_ctx.create_chart(doc_id, sheet_name, range_address, target_cell, chart_type)
