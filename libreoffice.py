@@ -17,16 +17,12 @@ import logging
 from dotenv import load_dotenv
 import os
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env
 load_dotenv()
 
-
 class AppContext:
-    """Manages OooDev loader and document state."""
     def __init__(self):
         self.loader = None
         self.documents = {}
@@ -35,7 +31,6 @@ class AppContext:
         os.makedirs(self.output_dir, exist_ok=True)
 
     def start_office(self):
-        """Initialize LibreOffice connection via OooDev."""
         if self.loader is None:
             try:
                 self.loader = Lo.load_office(
@@ -48,28 +43,23 @@ class AppContext:
         return self.loader
 
     def get_document(self, doc_id: str):
-        """Retrieve a document by ID."""
         return self.documents.get(doc_id)
 
     def add_document(self, doc_id: str, doc):
-        """Store a document with a unique ID."""
         self.documents[doc_id] = doc
 
     def remove_document(self, doc_id: str):
-        """Remove a document from the store."""
         self.documents.pop(doc_id, None)
 
     def close_office(self):
-        """Close the LibreOffice instance."""
         if self.loader is not None:
             Lo.close_office()
             self.loader = None
 
     def format_cell_range(self, doc_id: str, sheet_name: str, range_address: str, font_name: str = "Arial", font_size: int = 12, bold: bool = False, italic: bool = False, alignment: str = "center"):
-        """Format a cell range in a Calc document with font, style, and alignment."""
         doc = self.get_document(doc_id)
         if not doc or not isinstance(doc, CalcDoc):
-            raise RuntimeException("Document is not a spreadsheet")
+            raise RuntimeError("Document is not a spreadsheet")
         sheet = doc.sheets.get_by_name(sheet_name)
         rng = sheet.rng(range_address)
         rng.set_font_name(font_name)
@@ -84,15 +74,14 @@ class AppContext:
             "right": "RIGHT"
         }
         if alignment.lower() not in alignment_map:
-            raise RuntimeException(f"Invalid alignment. Use: {', '.join(alignment_map.keys())}")
+            raise RuntimeError(f"Invalid alignment. Use: {', '.join(alignment_map.keys())}")
         rng.set_hori_justification(alignment_map[alignment.lower()])
         return f"Formatted range {range_address} with {font_name} {font_size}pt, bold={bold}, italic={italic}, aligned {alignment}"
 
     def conditional_format(self, doc_id: str, sheet_name: str, range_address: str, threshold: float, above_color: str = "#FF0000", below_color: str = "#00FF00"):
-        """Apply conditional formatting to a cell range based on a threshold."""
         doc = self.get_document(doc_id)
         if not doc or not isinstance(doc, CalcDoc):
-            raise RuntimeException("Document is not a spreadsheet")
+            raise RuntimeError("Document is not a spreadsheet")
         sheet = doc.sheets.get_by_name(sheet_name)
         rng = sheet.rng(range_address)
         for cell in rng:
@@ -103,10 +92,9 @@ class AppContext:
         return f"Applied conditional formatting to {range_address} with threshold {threshold}"
 
     def create_chart(self, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str, title: str = "", x_label: str = "", y_label: str = "", show_legend: bool = True, show_data_labels: bool = False):
-        """Create a chart in a Calc document with customization."""
         doc = self.get_document(doc_id)
         if not doc or not isinstance(doc, CalcDoc):
-            raise RuntimeException("Document is not a spreadsheet")
+            raise RuntimeError("Document is not a spreadsheet")
         sheet = doc.sheets.get_by_name(sheet_name)
         chart_types = {
             "column": ChartTypes.Column.TEMPLATE_STACKED.COLUMN,
@@ -115,7 +103,7 @@ class AppContext:
             "pie": ChartTypes.Pie.TEMPLATE_DONUT.PIE
         }
         if chart_type not in chart_types:
-            raise RuntimeException(f"Invalid chart type. Use: {', '.join(chart_types.keys())}")
+            raise RuntimeError(f"Invalid chart type. Use: {', '.join(chart_types.keys())}")
         chart = sheet.charts.insert_chart(
             rng_obj=sheet.rng(range_address),
             cell_name=target_cell,
@@ -149,20 +137,26 @@ async def app_lifespan(server: FastMCP):
             app_ctx.remove_document(doc_id)
         app_ctx.close_office()
 
-# Plugin-specific MCP server
 mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 
 @mcp._app.post("/")
 async def root_post():
     return {
         "message": "LibreOffice plugin",
-        "tools": ["your_tool_name"],  # Replace with actual tools
-        "resources": ["your_resource_id"]  # Replace with actual resources
+        "tools": [
+            "open_document", "new_document", "save_document", "close_document",
+            "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
+            "create_pivot_table", "sort_range", "calculate_statistics",
+            "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
+            "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
+            "insert_text", "apply_style", "run_macro"
+        ],
+        "resources": []
     }
+
 # Core Document Management Tools
 @mcp.tool()
 def open_document(ctx: Context, url: str, doc_type: str) -> str:
-    """Open an existing LibreOffice document from a URL."""
     app_ctx = ctx.request_context.lifespan_context
     doc_types = {
         "writer": WriteDoc,
@@ -172,7 +166,7 @@ def open_document(ctx: Context, url: str, doc_type: str) -> str:
         "base": None
     }
     if doc_type not in doc_types:
-        raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
+        raise RuntimeError(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
     try:
         if doc_type == "base":
             doc = Lo.open_doc(fnm=url, loader=app_ctx.loader)
@@ -184,11 +178,10 @@ def open_document(ctx: Context, url: str, doc_type: str) -> str:
         app_ctx.add_document(doc_id, doc)
         return doc_id
     except Exception as e:
-        raise RuntimeException(f"Failed to open document: {str(e)}")
+        raise RuntimeError(f"Failed to open document: {str(e)}")
 
 @mcp.tool()
 def new_document(ctx: Context, doc_type: str) -> str:
-    """Create a new LibreOffice document of the specified type."""
     app_ctx = ctx.request_context.lifespan_context
     doc_types = {
         "writer": WriteDoc,
@@ -198,7 +191,7 @@ def new_document(ctx: Context, doc_type: str) -> str:
         "base": None
     }
     if doc_type not in doc_types:
-        raise RuntimeException(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
+        raise RuntimeError(f"Invalid document type. Use: {', '.join(doc_types.keys())}")
     try:
         if doc_type == "base":
             doc = Lo.create_doc(doc_type="sbase", loader=app_ctx.loader)
@@ -210,52 +203,48 @@ def new_document(ctx: Context, doc_type: str) -> str:
         app_ctx.add_document(doc_id, doc)
         return doc_id
     except Exception as e:
-        raise RuntimeException(f"Failed to create new document: {str(e)}")
+        raise RuntimeError(f"Failed to create new document: {str(e)}")
 
 @mcp.tool()
 def save_document(ctx: Context, doc_id: str, url: str) -> str:
-    """Save a document to a specified URL."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     try:
         doc.save_doc(fnm=os.path.join(app_ctx.output_dir, url))
         return f"Document saved to {url}"
     except Exception as e:
-        raise RuntimeException(f"Failed to save document: {str(e)}")
+        raise RuntimeError(f"Failed to save document: {str(e)}")
 
 @mcp.tool()
 def close_document(ctx: Context, doc_id: str) -> str:
-    """Close a LibreOffice document."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     try:
         doc.close_doc()
         app_ctx.remove_document(doc_id)
         return f"Document {doc_id} closed"
     except Exception as e:
-        raise RuntimeException(f"Failed to close document: {str(e)}")
+        raise RuntimeError(f"Failed to close document: {str(e)}")
 
 # Calc (Spreadsheet) Tools
 @mcp.tool()
 def get_sheet_names(ctx: Context, doc_id: str) -> List[str]:
-    """Get a list of sheet names in a spreadsheet document."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     return doc.get_sheet_names()
 
 @mcp.tool()
 def get_cell_value(ctx: Context, doc_id: str, sheet_name: str, cell_address: str) -> str:
-    """Get the value of a cell in a spreadsheet."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     sheet = doc.sheets.get_by_name(sheet_name)
     cell = sheet[cell_address]
     if cell.is_empty():
@@ -264,11 +253,10 @@ def get_cell_value(ctx: Context, doc_id: str, sheet_name: str, cell_address: str
 
 @mcp.tool()
 def set_cell_value(ctx: Context, doc_id: str, sheet_name: str, cell_address: str, value: str) -> str:
-    """Set the value of a cell in a spreadsheet."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     sheet = doc.sheets.get_by_name(sheet_name)
     try:
         cell = sheet[cell_address]
@@ -279,22 +267,20 @@ def set_cell_value(ctx: Context, doc_id: str, sheet_name: str, cell_address: str
 
 @mcp.tool()
 def create_new_sheet(ctx: Context, doc_id: str, sheet_name: str) -> str:
-    """Create a new sheet in a spreadsheet document."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     doc.sheets.insert_new_by_name(sheet_name, len(doc.get_sheet_names()))
     return f"Created new sheet '{sheet_name}'"
 
 # Data Analysis Tools (Calc)
 @mcp.tool()
 def create_pivot_table(ctx: Context, doc_id: str, sheet_name: str, source_range: str, target_cell: str) -> str:
-    """Create a pivot table from a data range in a spreadsheet."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     sheet = doc.sheets.get_by_name(sheet_name)
     tbl_chart = sheet.charts.insert_chart(
         rng_obj=sheet.rng(source_range),
@@ -307,13 +293,13 @@ def create_pivot_table(ctx: Context, doc_id: str, sheet_name: str, source_range:
 
 @mcp.tool()
 def sort_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, sort_column: int, ascending: bool) -> str:
-    """Sort a range in a spreadsheet by a specified column."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     sheet = doc.sheets.get_by_name(sheet_name)
     rng = sheet.rng(range_address)
+    from com.sun.star.util import SortField
     sort_field = SortField()
     sort_field.Field = sort_column
     sort_field.SortAscending = ascending
@@ -322,11 +308,10 @@ def sort_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, s
 
 @mcp.tool()
 def calculate_statistics(ctx: Context, doc_id: str, sheet_name: str, range_address: str) -> Dict[str, float]:
-    """Calculate basic statistics (sum, average) for a range in a spreadsheet."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     sheet = doc.sheets.get_by_name(sheet_name)
     rng = sheet.rng(range_address)
     values = [cell.value for cell in rng if isinstance(cell.value, (int, float))]
@@ -339,11 +324,10 @@ def calculate_statistics(ctx: Context, doc_id: str, sheet_name: str, range_addre
 # Base (Database) Tools
 @mcp.tool()
 def run_query(ctx: Context, doc_id: str, sql: str, username: str = "", password: str = "") -> List[Dict[str, str]] | str:
-    """Execute an SQL query on a Base database."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     data_source = doc.getDataSource()
     connection = data_source.getConnection(username, password)
     statement = connection.createStatement()
@@ -364,11 +348,10 @@ def run_query(ctx: Context, doc_id: str, sql: str, username: str = "", password:
 
 @mcp.tool()
 def list_tables(ctx: Context, doc_id: str) -> List[str]:
-    """List all tables in a Base database."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     data_source = doc.getDataSource()
     connection = data_source.getConnection("", "")
     meta_data = connection.getMetaData()
@@ -380,11 +363,10 @@ def list_tables(ctx: Context, doc_id: str) -> List[str]:
 
 @mcp.tool()
 def create_table(ctx: Context, doc_id: str, table_name: str, columns: List[Dict[str, str]]) -> str:
-    """Create a new table in a Base database."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     data_source = doc.getDataSource()
     connection = data_source.getConnection("", "")
     statement = connection.createStatement()
@@ -395,11 +377,10 @@ def create_table(ctx: Context, doc_id: str, table_name: str, columns: List[Dict[
 
 @mcp.tool()
 def insert_data(ctx: Context, doc_id: str, table_name: str, data: Dict[str, str]) -> str:
-    """Insert a row of data into a Base table."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     data_source = doc.getDataSource()
     connection = data_source.getConnection("", "")
     statement = connection.createStatement()
@@ -411,11 +392,10 @@ def insert_data(ctx: Context, doc_id: str, table_name: str, data: Dict[str, str]
 
 @mcp.tool()
 def create_form(ctx: Context, doc_id: str, table_name: str, form_name: str) -> str:
-    """Create a form in a Base database linked to a table."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     forms = Forms(doc=doc)
     form = forms.insert_form(name=form_name)
     form.setPropertyValue("ContentType", "Table")
@@ -424,11 +404,10 @@ def create_form(ctx: Context, doc_id: str, table_name: str, form_name: str) -> s
 
 @mcp.tool()
 def create_report(ctx: Context, doc_id: str, table_name: str, report_name: str) -> str:
-    """Create a report in a Base database based on a table."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     report_designer = Lo.create_instance_mcf("com.sun.star.report.pentaho.SOReportJobFactory", loader=app_ctx.loader)
     report = report_designer.createReport()
     report.setPropertyValue("Command", table_name)
@@ -438,15 +417,14 @@ def create_report(ctx: Context, doc_id: str, table_name: str, report_name: str) 
 # Writer Tools
 @mcp.tool()
 def insert_text(ctx: Context, doc_id: str, text: str, position: int) -> str:
-    """Insert text into a Writer document at a specified position."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, WriteDoc):
-        raise RuntimeException("Document is not a text document")
+        raise RuntimeError("Document is not a text document")
     cursor = doc.get_cursor()
     total_length = len(Write.get_text_string(cursor))
     if position < 0 or position > total_length:
-        raise RuntimeException(f"Position {position} out of range (0-{total_length})")
+        raise RuntimeError(f"Position {position} out of range (0-{total_length})")
     cursor.goto_start(False)
     cursor.go_right(position, False)
     Write.append(cursor, text)
@@ -454,11 +432,10 @@ def insert_text(ctx: Context, doc_id: str, text: str, position: int) -> str:
 
 @mcp.tool()
 def apply_style(ctx: Context, doc_id: str, style_name: str, start: int, end: int) -> str:
-    """Apply a paragraph style to a text range in a Writer document."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, WriteDoc):
-        raise RuntimeException("Document is not a text document")
+        raise RuntimeError("Document is not a text document")
     cursor = doc.get_cursor()
     cursor.goto_start(False)
     cursor.go_right(start, False)
@@ -469,12 +446,11 @@ def apply_style(ctx: Context, doc_id: str, style_name: str, start: int, end: int
 # Additional Tools
 @mcp.tool()
 def run_macro(ctx: Context, doc_id: str, macro_name: str) -> str:
-    """Run a Python macro in a document."""
     from ooodev.macro.macro_loader import MacroLoader
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc:
-        raise RuntimeException("Document not found")
+        raise RuntimeError("Document not found")
     with MacroLoader():
         script = doc.getScriptProvider().getScript(f"vnd.sun.star.script:{macro_name}?language=Python&location=document")
         script.invoke((), (), ())
@@ -482,11 +458,10 @@ def run_macro(ctx: Context, doc_id: str, macro_name: str) -> str:
 
 @mcp.tool()
 def insert_form_control(ctx: Context, doc_id: str, sheet_name: str, cell_address: str, control_type: str, label: str) -> str:
-    """Insert a form control into a Calc sheet."""
     app_ctx = ctx.request_context.lifespan_context
     doc = app_ctx.get_document(doc_id)
     if not doc or not isinstance(doc, CalcDoc):
-        raise RuntimeException("Document is not a spreadsheet")
+        raise RuntimeError("Document is not a spreadsheet")
     sheet = doc.sheets.get_by_name(sheet_name)
     cell = sheet[cell_address]
     control_types = {
@@ -495,24 +470,28 @@ def insert_form_control(ctx: Context, doc_id: str, sheet_name: str, cell_address
         "listbox": Forms.insert_control_list_box
     }
     if control_type not in control_types:
-        raise RuntimeException(f"Invalid control type. Use: {', '.join(control_types.keys())}")
+        raise RuntimeError(f"Invalid control type. Use: {', '.join(control_types.keys())}")
     control = control_types[control_type](cell=cell, label=label)
     return f"Inserted {control_type} control '{label}' at {cell_address}"
 
 @mcp.tool()
 def format_cell_range(ctx: Context, doc_id: str, sheet_name: str, range_address: str, font_name: str = "Arial", font_size: int = 12, bold: bool = False, italic: bool = False, alignment: str = "center") -> str:
-    """Format a cell range in a Calc document."""
     app_ctx = ctx.request_context.lifespan_context
     return app_ctx.format_cell_range(doc_id, sheet_name, range_address, font_name, font_size, bold, italic, alignment)
 
 @mcp.tool()
 def conditional_format(ctx: Context, doc_id: str, sheet_name: str, range_address: str, threshold: float, above_color: str = "#FF0000", below_color: str = "#00FF00") -> str:
-    """Apply conditional formatting to a cell range."""
     app_ctx = ctx.request_context.lifespan_context
     return app_ctx.conditional_format(doc_id, sheet_name, range_address, threshold, above_color, below_color)
 
 @mcp.tool()
 def create_chart(ctx: Context, doc_id: str, sheet_name: str, range_address: str, target_cell: str, chart_type: str, title: str = "", x_label: str = "", y_label: str = "", show_legend: bool = True, show_data_labels: bool = False) -> str:
-    """Create a chart in a Calc document."""
     app_ctx = ctx.request_context.lifespan_context
     return app_ctx.create_chart(doc_id, sheet_name, range_address, target_cell, chart_type, title, x_label, y_label, show_legend, show_data_labels)
+
+def streamable_http_app():
+    app = mcp._app
+    print(f"{mcp.name} routes:", [route.path for route in app.routes])
+    return app
+
+mcp.streamable_http_app = streamable_http_app
