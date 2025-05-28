@@ -12,6 +12,7 @@ from ooodev.units import UnitMM
 from ooodev.form.forms import Forms
 from ooodev.utils.color import StandardColor
 from mcp.server.fastmcp import FastMCP, Context
+from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import logging
 from dotenv import load_dotenv
@@ -139,20 +140,26 @@ async def app_lifespan(server: FastMCP):
 
 mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 
-@mcp._app.post("/")
-async def root_post():
-    return {
-        "message": "LibreOffice plugin",
-        "tools": [
-            "open_document", "new_document", "save_document", "close_document",
-            "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
-            "create_pivot_table", "sort_range", "calculate_statistics",
-            "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
-            "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
-            "insert_text", "apply_style", "run_macro"
-        ],
-        "resources": []
-    }
+def streamable_http_app():
+    app = FastAPI()
+    @app.post("/")
+    async def root_post():
+        return {
+            "message": "LibreOffice plugin",
+            "tools": [
+                "open_document", "new_document", "save_document", "close_document",
+                "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
+                "create_pivot_table", "sort_range", "calculate_statistics",
+                "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
+                "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
+                "insert_text", "apply_style", "run_macro"
+            ],
+            "resources": []
+        }
+    print(f"{mcp.name} routes:", [route.path for route in app.routes])
+    return app
+
+mcp.streamable_http_app = streamable_http_app
 
 # Core Document Management Tools
 @mcp.tool()
@@ -204,7 +211,7 @@ def new_document(ctx: Context, doc_type: str) -> str:
         return doc_id
     except Exception as e:
         raise RuntimeError(f"Failed to create new document: {str(e)}")
-
+    
 @mcp.tool()
 def save_document(ctx: Context, doc_id: str, url: str) -> str:
     app_ctx = ctx.request_context.lifespan_context
@@ -489,23 +496,3 @@ def create_chart(ctx: Context, doc_id: str, sheet_name: str, range_address: str,
     app_ctx = ctx.request_context.lifespan_context
     return app_ctx.create_chart(doc_id, sheet_name, range_address, target_cell, chart_type, title, x_label, y_label, show_legend, show_data_labels)
 
-def streamable_http_app():
-    app = FastAPI()
-    @app.post("/")
-    async def root_post():
-        return {
-            "message": "LibreOffice plugin",
-            "tools": [
-                "open_document", "new_document", "save_document", "close_document",
-                "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
-                "create_pivot_table", "sort_range", "calculate_statistics",
-                "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
-                "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
-                "insert_text", "apply_style", "run_macro"
-            ],
-            "resources": []
-        }
-    print(f"{mcp.name} routes:", [route.path for route in app.routes])
-    return app
-
-mcp.streamable_http_app = streamable_http_app
