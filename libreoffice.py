@@ -490,7 +490,21 @@ def create_chart(ctx: Context, doc_id: str, sheet_name: str, range_address: str,
     return app_ctx.create_chart(doc_id, sheet_name, range_address, target_cell, chart_type, title, x_label, y_label, show_legend, show_data_labels)
 
 def streamable_http_app():
-    app = mcp._app
+    app = FastAPI()
+    @app.post("/")
+    async def root_post():
+        return {
+            "message": "LibreOffice plugin",
+            "tools": [
+                "open_document", "new_document", "save_document", "close_document",
+                "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
+                "create_pivot_table", "sort_range", "calculate_statistics",
+                "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
+                "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
+                "insert_text", "apply_style", "run_macro"
+            ],
+            "resources": []
+        }
     print(f"{mcp.name} routes:", [route.path for route in app.routes])
     return app
 
