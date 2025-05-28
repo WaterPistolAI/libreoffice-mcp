@@ -138,10 +138,15 @@ async def app_lifespan(server: FastMCP):
             app_ctx.remove_document(doc_id)
         app_ctx.close_office()
 
+
 mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 
 def streamable_http_app():
-    app = FastAPI()
+    # Try to use FastMCP's default app
+    try:
+        app = mcp._app if hasattr(mcp, '_app') else FastAPI()
+    except AttributeError:
+        app = FastAPI()
     @app.post("/")
     async def root_post(request: Request):
         logger.info(f"Received POST /libreoffice/ request: {request.url}")
