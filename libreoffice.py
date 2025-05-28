@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables from .env
 load_dotenv()
 
+
 class AppContext:
     """Manages OooDev loader and document state."""
     def __init__(self):
@@ -151,6 +152,13 @@ async def app_lifespan(server: FastMCP):
 # Plugin-specific MCP server
 mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 
+@mcp._app.post("/")
+async def root_post():
+    return {
+        "message": "LibreOffice plugin",
+        "tools": ["your_tool_name"],  # Replace with actual tools
+        "resources": ["your_resource_id"]  # Replace with actual resources
+    }
 # Core Document Management Tools
 @mcp.tool()
 def open_document(ctx: Context, url: str, doc_type: str) -> str:
