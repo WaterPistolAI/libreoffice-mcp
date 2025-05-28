@@ -142,27 +142,27 @@ async def app_lifespan(server: FastMCP):
 mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 
 def streamable_http_app():
-    # Try to use FastMCP's default app
-    try:
-        app = mcp._app if hasattr(mcp, '_app') else FastAPI()
-    except AttributeError:
-        app = FastAPI()
+    app = FastAPI()
     @app.post("/")
     async def root_post(request: Request):
-        logger.info(f"Received POST /libreoffice/ request: {request.url}")
+        logger.info(f"Received POST /libreoffice-mcp/ request: {request.url}")
         return {
-            "message": "LibreOffice plugin",
-            "tools": [
-                "open_document", "new_document", "save_document", "close_document",
-                "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
-                "create_pivot_table", "sort_range", "calculate_statistics",
-                "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
-                "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
-                "insert_text", "apply_style", "run_macro"
-            ],
-            "resources": []
+            "jsonrpc": "2.0",
+            "result": {
+                "message": "LibreOffice plugin",
+                "tools": [
+                    "open_document", "new_document", "save_document", "close_document",
+                    "get_sheet_names", "get_cell_value", "set_cell_value", "create_new_sheet",
+                    "create_pivot_table", "sort_range", "calculate_statistics",
+                    "format_cell_range", "conditional_format", "create_chart", "insert_form_control",
+                    "run_query", "list_tables", "create_table", "insert_data", "create_form", "create_report",
+                    "insert_text", "apply_style", "run_macro"
+                ],
+                "resources": []
+            },
+            "id": 1  # Static ID for simplicity; mcpo may require dynamic IDs
         }
-    logger.info(f"{mcp.name} routes: {[route.path for route in app.routes]}")
+    logger.info(f"{mcp.name} routes: {[f'{route.path} ({route.methods})' for route in app.routes]}")
     return app
 
 mcp.streamable_http_app = streamable_http_app
