@@ -143,7 +143,8 @@ mcp = FastMCP("LibreOffice OooDev MCP", lifespan=app_lifespan)
 def streamable_http_app():
     app = FastAPI()
     @app.post("/")
-    async def root_post():
+    async def root_post(request: Request):
+        logger.info(f"Received POST /libreoffice/ request: {request.url}")
         return {
             "message": "LibreOffice plugin",
             "tools": [
@@ -156,7 +157,7 @@ def streamable_http_app():
             ],
             "resources": []
         }
-    print(f"{mcp.name} routes:", [route.path for route in app.routes])
+    logger.info(f"{mcp.name} routes: {[route.path for route in app.routes]}")
     return app
 
 mcp.streamable_http_app = streamable_http_app
